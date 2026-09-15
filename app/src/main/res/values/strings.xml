@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Whats Translate Test</string>
+    <string name="accessibility_desc">Reads visible WhatsApp chat text when you request translation and can insert translated reply text into the WhatsApp message box. It never presses Send.</string>
+</resources>
