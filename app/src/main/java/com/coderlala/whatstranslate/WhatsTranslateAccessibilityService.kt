@@ -1,16 +1,27 @@
 package com.coderlala.whatstranslate
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.*
+import android.graphics.Rect
+import android.view.inputmethod.InputMethodManager
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
@@ -22,9 +33,13 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
     private var bubble: View? = null
     private var panel: View? = null
     private var lastCandidate: String = ""
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var enToHi: Translator
     private lateinit var hiToEn: Translator
+
+    private val whatsappPackages = setOf("com.whatsapp", "com.whatsapp.w4b")
+    private val downloadConditions = DownloadConditions.Builder().build()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -43,23 +58,38 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
                 .build()
         )
 
-        val conditions = DownloadConditions.Builder().build()
-        enToHi.downloadModelIfNeeded(conditions)
-        hiToEn.downloadModelIfNeeded(conditions)
-        showBubble()
+        // Warm up both models. Translation helpers below also re-check this,
+        // so first use remains safe if the download is still in progress.
+        enToHi.downloadModelIfNeeded(downloadConditions)
+        hiToEn.downloadModelIfNeeded(downloadConditions)
+
+        if (getWhatsAppRoot() != null) showBubble()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
-        if (pkg != "com.whatsapp" && pkg != "com.whatsapp.w4b") return
-        updateLastVisibleMessage()
+
+        if (pkg in whatsappPackages) {
+            showBubble()
+            updateLastVisibleMessage()
+            return
+        }
+
+        // Our own overlay and the on-screen keyboard can generate accessibility
+        // events while the translator panel is open. Do not tear the panel down
+        // just because one of those windows temporarily has focus.
+        if (pkg == packageName || panel != null) return
+
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            hideBubble()
+        }
     }
 
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        bubble?.let { runCatching { wm.removeView(it) } }
-        panel?.let { runCatching { wm.removeView(it) } }
+        closePanel()
+        hideBubble()
         if (::enToHi.isInitialized) enToHi.close()
         if (::hiToEn.isInitialized) hiToEn.close()
         super.onDestroy()
@@ -81,9 +111,11 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
                 showPanelAndTranslate()
             }
         }
+
         val size = dp(56)
         val params = WindowManager.LayoutParams(
-            size, size,
+            size,
+            size,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -91,12 +123,18 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             x = dp(12)
         }
-        wm.addView(button, params)
-        bubble = button
+
+        runCatching { wm.addView(button, params) }
+            .onSuccess { bubble = button }
+    }
+
+    private fun hideBubble() {
+        bubble?.let { runCatching { wm.removeView(it) } }
+        bubble = null
     }
 
     private fun showPanelAndTranslate() {
-        panel?.let { runCatching { wm.removeView(it) }; panel = null }
+        closePanel()
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -109,22 +147,30 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
         }
 
         val source = TextView(this).apply {
-            text = if (lastCandidate.isBlank()) "No WhatsApp message detected yet." else "English:\n$lastCandidate"
+            text = if (lastCandidate.isBlank()) {
+                "No WhatsApp message detected yet."
+            } else {
+                "English:\n$lastCandidate"
+            }
             setTextColor(Color.DKGRAY)
             textSize = 15f
         }
+
         val translated = TextView(this).apply {
-            text = "Hindi: translating…"
+            text = if (lastCandidate.isBlank()) "Hindi: —" else "Hindi: preparing translation…"
             setTextColor(Color.BLACK)
             textSize = 17f
             setPadding(0, dp(8), 0, dp(8))
         }
+
         val reply = EditText(this).apply {
-            hint = "Type reply in Hindi/Hinglish"
+            hint = "Type reply in Hindi (Hinglish may vary)"
             minLines = 2
+            maxLines = 5
             setTextColor(Color.BLACK)
             setHintTextColor(Color.GRAY)
         }
+
         val insert = Button(this).apply { text = "Translate + Insert into WhatsApp" }
         val close = Button(this).apply { text = "Close" }
 
@@ -134,23 +180,33 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
         container.addView(insert)
         container.addView(close)
 
+        val maxWidth = resources.displayMetrics.widthPixels - dp(24)
+        val panelWidth = minOf(dp(360), maxWidth)
         val params = WindowManager.LayoutParams(
-            dp(330), WindowManager.LayoutParams.WRAP_CONTENT,
+            panelWidth,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            0,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-        wm.addView(container, params)
+
+        runCatching { wm.addView(container, params) }
+            .onFailure {
+                Toast.makeText(this, "Could not open translator panel", Toast.LENGTH_LONG).show()
+                return
+            }
         panel = container
 
-        if (lastCandidate.isBlank()) {
-            translated.text = "Hindi: —"
-        } else {
-            enToHi.translate(lastCandidate)
-                .addOnSuccessListener { translated.text = "Hindi:\n$it" }
-                .addOnFailureListener { translated.text = "Hindi translation failed: ${it.message ?: "unknown error"}" }
+        if (lastCandidate.isNotBlank()) {
+            translateAfterModelReady(
+                translator = enToHi,
+                input = lastCandidate,
+                onSuccess = { translated.text = "Hindi:\n$it" },
+                onFailure = { translated.text = "Hindi translation failed: ${it.message ?: "unknown error"}" }
+            )
         }
 
         insert.setOnClickListener {
@@ -159,28 +215,63 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
                 Toast.makeText(this, "Type your reply first", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+
             insert.isEnabled = false
             insert.text = "Translating…"
-            hiToEn.translate(raw)
-                .addOnSuccessListener { english ->
-                    val ok = insertIntoWhatsApp(english)
-                    if (ok) {
-                        Toast.makeText(this, "Inserted. Review and press Send.", Toast.LENGTH_LONG).show()
-                        closePanel()
-                    } else {
-                        Toast.makeText(this, "Could not find WhatsApp message box", Toast.LENGTH_LONG).show()
-                    }
-                }
-                .addOnFailureListener {
-                    Toast.makeText(this, "Reply translation failed: ${it.message}", Toast.LENGTH_LONG).show()
-                }
-                .addOnCompleteListener {
+
+            translateAfterModelReady(
+                translator = hiToEn,
+                input = raw,
+                onSuccess = { english ->
+                    // Remove our focusable overlay first. This lets WhatsApp become
+                    // the active interactive window again before we search for its
+                    // message editor. It is more reliable across Android vendors.
+                    closePanel()
+                    mainHandler.postDelayed({
+                        val ok = insertIntoWhatsApp(english)
+                        if (ok) {
+                            Toast.makeText(this, "Inserted. Review it, then press Send.", Toast.LENGTH_LONG).show()
+                        } else {
+                            copyToClipboard(english)
+                            Toast.makeText(
+                                this,
+                                "Could not insert automatically. English reply copied — paste it in WhatsApp.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }, 250)
+                },
+                onFailure = {
                     insert.isEnabled = true
                     insert.text = "Translate + Insert into WhatsApp"
+                    Toast.makeText(this, "Reply translation failed: ${it.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
                 }
+            )
         }
 
         close.setOnClickListener { closePanel() }
+
+        // Put cursor in the reply box so the keyboard appears with one tap less.
+        reply.requestFocus()
+        reply.postDelayed({
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(reply, InputMethodManager.SHOW_IMPLICIT)
+        }, 250)
+    }
+
+    private fun translateAfterModelReady(
+        translator: Translator,
+        input: String,
+        onSuccess: (String) -> Unit,
+        onFailure: (Exception) -> Unit
+    ) {
+        translator.downloadModelIfNeeded(downloadConditions)
+            .addOnSuccessListener {
+                translator.translate(input)
+                    .addOnSuccessListener(onSuccess)
+                    .addOnFailureListener(onFailure)
+            }
+            .addOnFailureListener(onFailure)
     }
 
     private fun closePanel() {
@@ -189,39 +280,107 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
     }
 
     private fun updateLastVisibleMessage() {
-        val root = rootInActiveWindow ?: return
-        val items = mutableListOf<String>()
-        collectText(root, items)
-        lastCandidate = items.asReversed().firstOrNull { isLikelyChatMessage(it) } ?: lastCandidate
+        val root = getWhatsAppRoot() ?: return
+        val screenHeight = resources.displayMetrics.heightPixels
+        val candidates = mutableListOf<MessageCandidate>()
+        collectMessageCandidates(root, candidates, screenHeight)
+
+        // In a normal chat, the newest visible bubble is the lowest useful
+        // non-editable text above the composer. This is much safer than using
+        // accessibility-tree traversal order, which varies by WhatsApp version.
+        candidates
+            .filter { isLikelyChatMessage(it.text) }
+            .maxByOrNull { it.bottom }
+            ?.text
+            ?.let { lastCandidate = it }
     }
 
-    private fun collectText(node: AccessibilityNodeInfo?, out: MutableList<String>) {
+    private data class MessageCandidate(val text: String, val bottom: Int)
+
+    private fun collectMessageCandidates(
+        node: AccessibilityNodeInfo?,
+        out: MutableList<MessageCandidate>,
+        screenHeight: Int
+    ) {
         if (node == null) return
-        node.text?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let(out::add)
-        node.contentDescription?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let(out::add)
-        for (i in 0 until node.childCount) collectText(node.getChild(i), out)
+
+        // Never treat the WhatsApp composer (or another editable field) as a
+        // received message candidate.
+        if (!node.isEditable) {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            val centerY = bounds.centerY()
+            val inChatBody = centerY > (screenHeight * 0.10f) && centerY < (screenHeight * 0.92f)
+
+            if (inChatBody && !bounds.isEmpty) {
+                node.text?.toString()?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { out.add(MessageCandidate(it, bounds.bottom)) }
+
+                // Content descriptions sometimes contain the complete message
+                // when the visible text node is split. Keep them as a fallback.
+                node.contentDescription?.toString()?.trim()
+                    ?.takeIf { it.isNotBlank() && it != node.text?.toString()?.trim() }
+                    ?.let { out.add(MessageCandidate(it, bounds.bottom)) }
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            collectMessageCandidates(node.getChild(i), out, screenHeight)
+        }
     }
 
     private fun isLikelyChatMessage(text: String): Boolean {
         if (text.length < 2 || text.length > 1500) return false
+
         val lower = text.lowercase()
         val blocked = listOf(
-            "type a message", "message", "send", "emoji", "camera", "attach",
-            "voice message", "video call", "voice call", "online", "typing…",
-            "whatsapp", "search", "more options"
+            "type a message",
+            "message",
+            "send",
+            "emoji",
+            "camera",
+            "attach",
+            "voice message",
+            "video call",
+            "voice call",
+            "online",
+            "typing…",
+            "typing...",
+            "whatsapp",
+            "search",
+            "more options"
         )
+
         if (blocked.any { lower == it || lower.startsWith("$it ") }) return false
         if (text.matches(Regex("^\\d{1,2}:\\d{2}(\\s?[ap]m)?$", RegexOption.IGNORE_CASE))) return false
         return true
     }
 
     private fun insertIntoWhatsApp(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = getWhatsAppRoot() ?: return false
         val edit = findEditable(root) ?: return false
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
         return edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun copyToClipboard(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Translated reply", text))
+    }
+
+    private fun getWhatsAppRoot(): AccessibilityNodeInfo? {
+        // A focusable accessibility overlay may become rootInActiveWindow.
+        // Search all interactive windows and deliberately choose WhatsApp.
+        windows.forEach { window ->
+            val root = window.root ?: return@forEach
+            if (root.packageName?.toString() in whatsappPackages) return root
+        }
+
+        val active = rootInActiveWindow
+        return if (active?.packageName?.toString() in whatsappPackages) active else null
     }
 
     private fun findEditable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -234,5 +393,5 @@ class WhatsTranslateAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }

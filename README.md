@@ -1,38 +1,27 @@
 # Whats Translate Test
 
-Prototype Android accessibility overlay for WhatsApp.
+Prototype Android accessibility helper for WhatsApp / WhatsApp Business.
 
 ## What it does
-- Floating `TR` bubble while WhatsApp is open.
-- Reads the latest visible WhatsApp text when you tap the bubble.
-- Translates English -> Hindi with Google ML Kit on-device translation.
-- Lets you type a Hindi/Hinglish reply.
-- Translates Hindi -> English and inserts it into the WhatsApp compose field.
-- Does **not** press Send.
+- Floating `TR` button while WhatsApp is active.
+- Reads visible WhatsApp accessibility text and prefers the lowest likely chat message on screen.
+- Translates English → Hindi with Google ML Kit on-device translation.
+- Lets you type a Hindi reply and translates Hindi → English.
+- Closes its overlay before inserting the English reply into WhatsApp for better device compatibility.
+- Never presses Send automatically.
+- If automatic insertion fails, it copies the English translation to the clipboard so you can paste it manually.
 
-## Build
-Open this folder in Android Studio and let Gradle sync.
+## First install
+1. Install the debug APK.
+2. Open **Whats Translate Test**.
+3. Enable its Accessibility service.
+4. On Android 13+, a sideloaded APK may show Accessibility as restricted. Open **Settings → Apps → Whats Translate Test → ⋮ → Allow restricted settings**, then enable the Accessibility service.
+5. Open a normal WhatsApp chat and tap `TR`.
 
-Then use:
+## Translation notes
+- First translation needs internet because ML Kit downloads the English/Hindi models.
+- After the models are downloaded, translation can run locally.
+- Hindi written in Devanagari is expected to work better than Roman-Hindi/Hinglish such as `kal main free hu` because the reply translator is configured as Hindi → English.
 
-```bash
-./gradlew assembleDebug
-```
-
-APK output:
-
-`app/build/outputs/apk/debug/app-debug.apk`
-
-## Test
-1. Install the APK.
-2. Open it and tap **Enable Accessibility Service**.
-3. Enable **Whats Translate Test**.
-4. Open WhatsApp chat.
-5. Tap the `TR` floating bubble.
-6. First translation may need internet briefly to download ML Kit language models.
-7. Type Hindi/Hinglish reply and tap **Translate + Insert into WhatsApp**.
-8. Review the English text and manually tap WhatsApp Send.
-
-## Important prototype limitation
-WhatsApp's accessibility hierarchy can vary by app version/device. The current detector heuristically chooses the last visible text. For production, add more robust message-bubble detection and device/version testing.
-# whatsapp-translater
+## Important test limitation
+WhatsApp does not expose a supported public API for reading the currently displayed personal chat. This prototype uses Android Accessibility. WhatsApp UI/accessibility-tree changes can therefore affect message detection or insertion. Always review the detected source text and translated English before pressing Send.

@@ -19,8 +19,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "Whats Translate Test\n\n1. Enable the accessibility service.\n2. Open WhatsApp.\n3. Tap the floating TR button.\n4. The latest visible message is translated English → Hindi.\n5. Type Hindi/Hinglish and tap Translate + Insert.\n6. Review it and press Send yourself.\n\nThe app does NOT auto-send messages."
-            textSize = 18f
+            text = "Whats Translate Test\n\n" +
+                "1. Tap the button below and enable Whats Translate Test in Accessibility.\n" +
+                "2. Open WhatsApp or WhatsApp Business.\n" +
+                "3. Tap the floating TR button.\n" +
+                "4. The latest visible message is translated English → Hindi.\n" +
+                "5. Type your reply in Hindi and tap Translate + Insert.\n" +
+                "6. Review the English text and press Send yourself.\n\n" +
+                "First translation needs internet to download Google's on-device language model. " +
+                "After the model is downloaded, translation can run locally.\n\n" +
+                "Note: Roman-Hindi/Hinglish such as ‘kal main free hu’ may be less accurate than Hindi script.\n\n" +
+                "If Android blocks Accessibility for this sideloaded APK (common on Android 13+), open App info → three-dot menu → Allow restricted settings, then enable Accessibility.\n\n" +
+                "This test app never presses Send automatically."
+            textSize = 17f
         })
 
         root.addView(Button(this).apply {

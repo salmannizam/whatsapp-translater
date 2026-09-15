@@ -4,15 +4,44 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
 
+    environment:
+      java: 17
+
     scripts:
+      - name: Verify project layout
+        script: |
+          set -e
+          test -f "$CM_BUILD_DIR/settings.gradle.kts"
+          test -f "$CM_BUILD_DIR/build.gradle.kts"
+          test -f "$CM_BUILD_DIR/app/build.gradle.kts"
+          test -f "$CM_BUILD_DIR/app/src/main/AndroidManifest.xml"
+
       - name: Set Android SDK location
         script: |
+          set -e
+          test -n "$ANDROID_SDK_ROOT"
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+
+      - name: Install Gradle 8.9
+        script: |
+          set -e
+          GRADLE_DIR="$HOME/.gradle/codemagic/gradle-8.9"
+          if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
+            mkdir -p "$HOME/.gradle/codemagic"
+            curl --fail --location --retry 3 \
+              "https://services.gradle.org/distributions/gradle-8.9-bin.zip" \
+              --output /tmp/gradle-8.9-bin.zip
+            rm -rf "$GRADLE_DIR"
+            unzip -q /tmp/gradle-8.9-bin.zip -d "$HOME/.gradle/codemagic"
+          fi
+          "$GRADLE_DIR/bin/gradle" --version
 
       - name: Build Debug APK
         script: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          set -e
+          cd "$CM_BUILD_DIR"
+          "$HOME/.gradle/codemagic/gradle-8.9/bin/gradle" --no-daemon clean assembleDebug
+          test -f app/build/outputs/apk/debug/app-debug.apk
 
     artifacts:
-      - app/build/outputs/**/*.apk
+      - app/build/outputs/apk/debug/app-debug.apk
